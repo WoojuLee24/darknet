@@ -24,7 +24,9 @@ def parser():
                         help="windown inference display. For headless systems")
     parser.add_argument("--ext_output", action='store_true',
                         help="display bbox coordinates of detected objects")
-    parser.add_argument("--save_labels", action='store_true',
+    # parser.add_argument("--save_labels", action='store_true',
+    #                     help="save detections bbox for each image in yolo format")
+    parser.add_argument("--save_labels", default="/ws/data/team_ksaj",
                         help="save detections bbox for each image in yolo format")
     parser.add_argument("--config_file", default="./cfg/yolov4.cfg",
                         help="path to config file")
@@ -111,6 +113,7 @@ def image_detection(image_path, network, class_names, class_colors, thresh):
 
     darknet.copy_image_from_bytes(darknet_image, image_resized.tobytes())
     detections = darknet.detect_image(network, class_names, darknet_image, thresh=thresh)
+    darknet.free_image(darknet_image)
     image = darknet.draw_boxes(detections, image_resized, class_colors)
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB), detections
 
@@ -134,39 +137,60 @@ def batch_detection(network, images, class_names, class_colors,
     return images, batch_predictions
 
 
+def image_classification(image, network, class_names):
+    width = darknet.network_width(network)
+    height = darknet.network_height(network)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_resized = cv2.resize(image_rgb, (width, height),
+                                interpolation=cv2.INTER_LINEAR)
+    darknet_image = darknet.make_image(width, height, 3)
+    darknet.copy_image_from_bytes(darknet_image, image_resized.tobytes())
+    detections = darknet.predict_image(network, darknet_image)
+    predictions = [(name, detections[idx]) for idx, name in enumerate(class_names)]
+    darknet.free_image(darknet_image)
+    return sorted(predictions, key=lambda x: -x[1])
+
+
 def convert2relative(image, bbox):
     """
     YOLO format use relative coordinates for annotation
     """
     x, y, w, h = bbox
-    width, height, _ = image.shape
+    height, width, _ = image.shape
     return x/width, y/height, w/width, h/height
 
 
-def save_annotations(name, image, detections, class_names):
+def save_annotations(name, image, save_path, detections, class_names):
     """
     Files saved with image_name.txt and relative coordinates
     """
-    file_name = name.split(".")[:-1][0] + ".txt"
+    # file_name = name.split(".")[:-1][0] + ".txt"
+
+    file_name = os.path.join(save_path, os.path.splitext(os.path.basename(name))[0] + ".txt")
     with open(file_name, "w") as f:
         for label, confidence, bbox in detections:
             x, y, w, h = convert2relative(image, bbox)
-            label = class_names.index(label)
+            # label = class_names.index(label)
+            label = class_names[label]
             f.write("{} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f}\n".format(label, x, y, w, h, float(confidence)))
 
 
 def batch_detection_example():
     args = parser()
     check_arguments_errors(args)
-    batch_size = 3
-    random.seed(3)  # deterministic bbox colors
+    batch_size = 64
+    random.seed(64)  # deterministic bbox colors
     network, class_names, class_colors = darknet.load_network(
         args.config_file,
         args.data_file,
         args.weights,
         batch_size=batch_size
     )
-    image_names = ['data/horses.jpg', 'data/horses.jpg', 'data/eagle.jpg']
+    image_names = ['/ws/data/ADD/images/2_23_000020_097.jpg',
+                   '/ws/data/ADD/images/2_23_000020_097.jpg',
+                   '/ws/data/ADD/images/2_23_000020_097.jpg',
+                   '/ws/data/ADD/images/3_35_000008_318.jpg',
+                   '/ws/data/ADD/images/4_49_000031_838.jpg']
     images = [cv2.imread(image) for image in image_names]
     images, detections,  = batch_detection(network, images, class_names,
                                            class_colors, batch_size=batch_size)
@@ -176,6 +200,7 @@ def batch_detection_example():
 
 
 def main():
+    start = time.time()
     args = parser()
     check_arguments_errors(args)
 
@@ -188,6 +213,7 @@ def main():
     )
 
     images = load_images(args.input)
+    class_dic = {u'dog': 1, u'soldier': 2, u'radiation_mark': 4, u'biochem_mark': 5, u'exit_mark': 6, u'end_mark': 7, u'start_mark': 8}
 
     index = 0
     while True:
@@ -203,7 +229,7 @@ def main():
             image_name, network, class_names, class_colors, args.thresh
             )
         if args.save_labels:
-            save_annotations(image_name, image, detections, class_names)
+            save_annotations(image_name, image, args.save_labels, detections, class_dic)
         darknet.print_detections(detections, args.ext_output)
         fps = int(1/(time.time() - prev_time))
         print("FPS: {}".format(fps))
@@ -212,9 +238,54 @@ def main():
             if cv2.waitKey() & 0xFF == ord('q'):
                 break
         index += 1
+    print("time: ", time.time()-start)
+
+
+def main2():
+    start = time.time()
+    args = parser()
+    check_arguments_errors(args)
+
+    random.seed(3)  # deterministic bbox colors
+    network, class_names, class_colors = darknet.load_network(
+        args.config_file,
+        args.data_file,
+        args.weights,
+        batch_size=args.batch_size
+    )
+
+    images_path = load_images(args.input)
+    images_path_len = len(images_path)
+    # index = 0
+    # while True:
+    #     # loop asking for new image paths if no list is given
+    #     if args.input:
+    #         if index >= len(images):
+    #             break
+    #         image_name = images[index]
+    #     else:
+    #         image_name = input("Enter Image Path: ")
+    #     prev_time = time.time()
+        # image, detections = image_detection(
+        #     image_name, network, class_names, class_colors, args.thresh
+        #     )
+    for idx in range(0, images_path_len, args.batch_size):
+        prev_time = time.time()
+        k = images_path[idx:idx+args.batch_size]
+        images = [cv2.imread(image_path) for image_path in images_path[idx:idx+args.batch_size]]
+
+        images, detections, = batch_detection(
+            network, images, class_names, class_colors, args.thresh, batch_size=args.batch_size)
+        # if args.save_labels:
+        #     save_annotations(image_name, image, args.save_labels, detections, class_names)
+        # darknet.print_detections(detections, args.ext_output)
+        fps = int(1/(time.time() - prev_time))/args.batch_size
+        print("FPS: {}".format(fps))
+    print("time: ", time.time()-start)
 
 
 if __name__ == "__main__":
     # unconmment next line for an example of batch processing
     # batch_detection_example()
     main()
+    # main2()
